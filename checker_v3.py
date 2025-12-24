@@ -553,7 +553,6 @@ class Console:
     _lock = Lock()
     _COLORS = (C.BRIGHT_CYAN, C.BRIGHT_MAGENTA, C.BRIGHT_YELLOW, C.BRIGHT_GREEN, C.BRIGHT_BLUE)
     MIN_INNER = 64
-    MAX_INNER = 100
     MIN_SQUARE_HEIGHT = 10
     
     @classmethod
@@ -563,12 +562,12 @@ class Console:
 
     @classmethod
     def _terminal_size(cls) -> os.terminal_size:
-        return shutil.get_terminal_size((cls.MAX_INNER + 4, 24))
+        return shutil.get_terminal_size((120, 28))
 
     @classmethod
     def _inner_width(cls) -> int:
         cols = cls._terminal_size().columns
-        return max(cls.MIN_INNER, min(cls.MAX_INNER, cols - 4))
+        return max(cls.MIN_INNER, cols - 4)
 
     @classmethod
     def _box_top(cls) -> str:
