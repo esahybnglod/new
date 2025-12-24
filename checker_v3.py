@@ -161,22 +161,22 @@ def clear_screen():
 
 @dataclass
 class BrowserConfig:
-    max_workers: int = 2
+    max_workers: int = 4
     window_width: int = 500
     window_height: int = 700
     login_timeout: int = 4
-    worker_stagger_delay: float = 0.5
+    worker_stagger_delay: float = 0.2
 
 
 @dataclass
 class TimingConfig:
-    poll_interval_fast: float = 0.15
-    poll_interval_slow: float = 0.4
+    poll_interval_fast: float = 0.1
+    poll_interval_slow: float = 0.25
     poll_slowdown_threshold: float = 8.0
-    post_submit_wait: float = 0.6
-    inter_account_delay: float = 0.3
-    stuck_threshold: float = 6.0
-    queue_timeout: float = 1.0
+    post_submit_wait: float = 0.4
+    inter_account_delay: float = 0.15
+    stuck_threshold: float = 4.0
+    queue_timeout: float = 0.5
 
 
 @dataclass
@@ -343,9 +343,12 @@ class LicenseManager:
             return False
     
     def _print_header(self):
-        print(f"\n{C.BRIGHT_CYAN}{'═'*50}")
-        print(f"  R6 LOCKER CHECKER - LICENSE AUTH")
-        print(f"{'═'*50}{C.RESET}\n")
+        title = f"{C.BRIGHT_WHITE}R6 LOCKER CHECKER - LICENSE AUTH{C.RESET}"
+        width = max(44, visible_len(title) + 8)
+        print(f"\n{C.BRIGHT_CYAN}╔{'═'*width}╗{C.RESET}")
+        pad = (width - visible_len(title)) // 2
+        print(f"{C.BRIGHT_CYAN}║{C.RESET}{' '*pad}{title}{' '*(width-pad-visible_len(title))}{C.BRIGHT_CYAN}║{C.RESET}")
+        print(f"{C.BRIGHT_CYAN}╚{'═'*width}╝{C.RESET}\n")
     
     def _load_key(self) -> Optional[str]:
         try:
@@ -369,6 +372,33 @@ def visible_len(s: str) -> int:
 
 
 T = TypeVar("T")
+
+
+def clip_ansi(text: str, max_width: int) -> str:
+    if max_width <= 0:
+        return ""
+    output: List[str] = []
+    width = 0
+    i = 0
+    while i < len(text) and width < max_width:
+        match = ANSI_PATTERN.match(text, i)
+        if match:
+            output.append(match.group(0))
+            i = match.end()
+            continue
+        ch = text[i]
+        ch_width = wcwidth(ch)
+        if ch_width < 0:
+            ch_width = 0
+        if width + ch_width > max_width:
+            break
+        output.append(ch)
+        width += ch_width
+        i += 1
+    truncated = i < len(text)
+    if truncated and width < max_width:
+        output.append("…")
+    return "".join(output)
 
 
 def retry_with_backoff(func: Callable[[], T], max_retries: int = 3, base_delay: float = 1.0) -> T:
@@ -521,13 +551,78 @@ class Stats:
 
 class Console:
     _lock = Lock()
-    _COLORS = (C.BRIGHT_CYAN, C.BRIGHT_MAGENTA, C.BRIGHT_YELLOW, C.BRIGHT_GREEN)
-    INNER = 70
+    _COLORS = (C.BRIGHT_CYAN, C.BRIGHT_MAGENTA, C.BRIGHT_YELLOW, C.BRIGHT_GREEN, C.BRIGHT_BLUE)
+    MIN_INNER = 64
+    MAX_INNER = 100
+    MIN_SQUARE_HEIGHT = 10
     
     @classmethod
     def _print(cls, *args, **kwargs):
         with cls._lock:
             print(*args, **kwargs, flush=True)
+
+    @classmethod
+    def _terminal_size(cls) -> os.terminal_size:
+        return shutil.get_terminal_size((cls.MAX_INNER + 4, 24))
+
+    @classmethod
+    def _inner_width(cls) -> int:
+        cols = cls._terminal_size().columns
+        return max(cls.MIN_INNER, min(cls.MAX_INNER, cols - 4))
+
+    @classmethod
+    def _box_top(cls) -> str:
+        inner = cls._inner_width()
+        return f"{C.BRIGHT_CYAN}╔{'═'*inner}╗{C.RESET}"
+
+    @classmethod
+    def _box_bottom(cls) -> str:
+        inner = cls._inner_width()
+        return f"{C.BRIGHT_CYAN}╚{'═'*inner}╝{C.RESET}"
+
+    @classmethod
+    def _box_divider(cls) -> str:
+        inner = cls._inner_width()
+        return f"{C.BRIGHT_CYAN}╠{'═'*inner}╣{C.RESET}"
+
+    @classmethod
+    def _center_line(cls, text: str) -> str:
+        inner = cls._inner_width()
+        fitted = clip_ansi(text, inner)
+        pad = max(0, (inner - visible_len(fitted)) // 2)
+        return f"{C.BRIGHT_CYAN}║{C.RESET}{' '*pad}{fitted}{' '*(inner-pad-visible_len(fitted))}{C.BRIGHT_CYAN}║{C.RESET}"
+
+    @classmethod
+    def _square_height(cls, inner: int, content_lines: int) -> int:
+        rows = cls._terminal_size().lines
+        target = max(content_lines, inner // 2, cls.MIN_SQUARE_HEIGHT)
+        if rows > 6:
+            return min(rows - 4, target)
+        return target
+
+    @classmethod
+    def _boxed_lines(cls, lines: List[str], square: bool = False) -> List[str]:
+        inner = cls._inner_width()
+        content = [cls._center_line(line) for line in lines]
+        height = len(content)
+        if square:
+            height = cls._square_height(inner, len(content))
+        pad_total = max(0, height - len(content))
+        pad_top = pad_total // 2
+        pad_bottom = pad_total - pad_top
+        padded = [cls._center_line("") for _ in range(pad_top)] + content + [
+            cls._center_line("") for _ in range(pad_bottom)
+        ]
+        return [cls._box_top(), *padded, cls._box_bottom()]
+
+    @classmethod
+    def _progress_bar(cls, current: int, total: int, width: int = 18) -> str:
+        if total <= 0:
+            filled = 0
+        else:
+            filled = int(width * min(current, total) / total)
+        bar = f"{C.BRIGHT_CYAN}{'█'*filled}{C.DIM}{'░'*(width-filled)}{C.RESET}"
+        return bar
     
     @classmethod
     def banner(cls):
@@ -539,68 +634,98 @@ class Console:
             f"{C.BRIGHT_WHITE}██║  ██║╚██████╔╝    ███████╗╚██████╔╝╚██████╗██║  ██╗███████╗██║  ██║{C.RESET}",
             f"{C.BRIGHT_WHITE}╚═╝  ╚═╝ ╚═════╝     ╚══════╝ ╚═════╝  ╚═════╝╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝{C.RESET}",
         ]
-        cls._print(f"\n{C.BRIGHT_CYAN}╔{'═'*cls.INNER}╗{C.RESET}")
-        for ln in lines:
-            pad = (cls.INNER - visible_len(ln)) // 2
-            cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}{' '*pad}{ln}{' '*(cls.INNER-pad-visible_len(ln))}{C.BRIGHT_CYAN}║{C.RESET}")
-        sub = f"HIGH-PERFORMANCE ACCOUNT CHECKER v{__version__}"
-        pad = (cls.INNER - len(sub)) // 2
-        cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}{' '*pad}{C.BRIGHT_WHITE}{sub}{C.RESET}{' '*(cls.INNER-pad-len(sub))}{C.BRIGHT_CYAN}║{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}╚{'═'*cls.INNER}╝{C.RESET}\n")
+        subtitle = f"{C.BRIGHT_WHITE}PROFESSIONAL EDITION v{__version__}{C.RESET}"
+        tagline = f"{C.DIM}High-Performance Account Verification Suite{C.RESET}"
+        all_lines = [*lines, "", subtitle, tagline]
+        cls._print("")
+        for line in cls._boxed_lines(all_lines, square=True):
+            cls._print(line)
+        cls._print("")
     
     @classmethod
     def section(cls, title: str):
-        pad = (cls.INNER - len(title)) // 2
-        cls._print(f"{C.BRIGHT_CYAN}╔{'═'*cls.INNER}╗{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}{' '*pad}{C.BRIGHT_WHITE}{title}{C.RESET}{' '*(cls.INNER-pad-len(title))}{C.BRIGHT_CYAN}║{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}╚{'═'*cls.INNER}╝{C.RESET}")
+        for line in cls._boxed_lines([f"{C.BRIGHT_WHITE}{title}{C.RESET}"], square=False):
+            cls._print(line)
     
     @classmethod
     def info(cls, msg: str):
-        cls._print(f"  {C.BRIGHT_BLUE}ℹ{C.RESET}  {msg}")
+        cls._print(f"  {C.BRIGHT_BLUE}ℹ{C.RESET}  {C.BRIGHT_WHITE}{msg}{C.RESET}")
     
     @classmethod
     def success(cls, msg: str):
-        cls._print(f"  {C.BRIGHT_GREEN}✓{C.RESET}  {msg}")
+        cls._print(f"  {C.BRIGHT_GREEN}✓{C.RESET}  {C.BRIGHT_WHITE}{msg}{C.RESET}")
     
     @classmethod
     def error(cls, msg: str):
-        cls._print(f"  {C.BRIGHT_RED}✗{C.RESET}  {msg}")
+        cls._print(f"  {C.BRIGHT_RED}✗{C.RESET}  {C.BRIGHT_WHITE}{msg}{C.RESET}")
     
     @classmethod
     def warning(cls, msg: str):
-        cls._print(f"  {C.BRIGHT_YELLOW}⚠{C.RESET}  {msg}")
+        cls._print(f"  {C.BRIGHT_YELLOW}⚠{C.RESET}  {C.BRIGHT_WHITE}{msg}{C.RESET}")
     
     @classmethod
     def worker(cls, wid: int, msg: str):
         color = cls._COLORS[wid % len(cls._COLORS)]
-        cls._print(f"  {color}[W{wid}]{C.RESET} {msg}")
+        cls._print(f"  {color}◆ W{wid}{C.RESET} {msg}")
     
     @classmethod
     def account_valid(cls, idx: int, total: int, rem: int, email: str, details: str):
-        cls._print(f"\r{C.BRIGHT_GREEN}✓{C.RESET} [{idx}/{total}] {C.BRIGHT_WHITE}{email}{C.RESET} {C.BRIGHT_GREEN}VALID{C.RESET} │ {details} {C.DIM}({rem} left){C.RESET}   ")
+        pct = f"{(idx/total*100):5.1f}%" if total else " 0.0%"
+        bar = cls._progress_bar(idx, total)
+        cls._print(
+            f"\r{C.BRIGHT_GREEN}✓{C.RESET} {bar} {C.DIM}[{pct}]{C.RESET} "
+            f"{C.BRIGHT_WHITE}{email}{C.RESET} {C.BRIGHT_GREEN}VALID{C.RESET} │ {details} {C.DIM}({rem} left){C.RESET}   "
+        )
     
     @classmethod
     def account_invalid(cls, idx: int, total: int, rem: int, email: str):
-        cls._print(f"\r{C.BRIGHT_RED}✗{C.RESET} [{idx}/{total}] {email} {C.BRIGHT_RED}INVALID{C.RESET} {C.DIM}({rem} left){C.RESET}   ")
+        pct = f"{(idx/total*100):5.1f}%" if total else " 0.0%"
+        bar = cls._progress_bar(idx, total)
+        cls._print(
+            f"\r{C.BRIGHT_RED}✗{C.RESET} {bar} {C.DIM}[{pct}]{C.RESET} "
+            f"{email} {C.BRIGHT_RED}INVALID{C.RESET} {C.DIM}({rem} left){C.RESET}   "
+        )
     
     @classmethod
     def account_error(cls, idx: int, total: int, rem: int, email: str, err: str):
-        cls._print(f"\r{C.BRIGHT_YELLOW}⚠{C.RESET} [{idx}/{total}] {email} {C.BRIGHT_YELLOW}ERROR:{C.RESET} {err} {C.DIM}({rem} left){C.RESET}   ")
+        pct = f"{(idx/total*100):5.1f}%" if total else " 0.0%"
+        bar = cls._progress_bar(idx, total)
+        cls._print(
+            f"\r{C.BRIGHT_YELLOW}⚠{C.RESET} {bar} {C.DIM}[{pct}]{C.RESET} "
+            f"{email} {C.BRIGHT_YELLOW}ERROR:{C.RESET} {err} {C.DIM}({rem} left){C.RESET}   "
+        )
     
     @classmethod
     def account_timeout(cls, idx: int, total: int, rem: int, email: str):
-        cls._print(f"\r{C.BRIGHT_YELLOW}⏱{C.RESET} [{idx}/{total}] {email} {C.BRIGHT_YELLOW}TIMEOUT{C.RESET} {C.DIM}({rem} left){C.RESET}   ")
+        pct = f"{(idx/total*100):5.1f}%" if total else " 0.0%"
+        bar = cls._progress_bar(idx, total)
+        cls._print(
+            f"\r{C.BRIGHT_YELLOW}⏱{C.RESET} {bar} {C.DIM}[{pct}]{C.RESET} "
+            f"{email} {C.BRIGHT_YELLOW}TIMEOUT{C.RESET} {C.DIM}({rem} left){C.RESET}   "
+        )
     
     @classmethod
     def stats(cls, s: Stats):
         m, sec = divmod(int(s.elapsed), 60)
-        cls._print(f"\n{C.BRIGHT_CYAN}╔{'═'*cls.INNER}╗{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}{'SESSION COMPLETE':^{cls.INNER}}{C.BRIGHT_CYAN}║{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}╠{'═'*cls.INNER}╣{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}  {C.BRIGHT_GREEN}✓ Valid:{C.RESET} {s.success:<10} {C.BRIGHT_RED}✗ Invalid:{C.RESET} {s.invalid:<10} {C.BRIGHT_YELLOW}⚠ Errors:{C.RESET} {s.errors:<10}{' '*(cls.INNER-58)}{C.BRIGHT_CYAN}║{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}║{C.RESET}  {C.BRIGHT_BLUE}⏱ Time:{C.RESET} {m:02d}:{sec:02d}      {C.BRIGHT_MAGENTA}⚡ Rate:{C.RESET} {s.rate:.1f}/min   {C.BRIGHT_WHITE}# Checked:{C.RESET} {s.processed}/{s.total}{' '*(cls.INNER-60)}{C.BRIGHT_CYAN}║{C.RESET}")
-        cls._print(f"{C.BRIGHT_CYAN}╚{'═'*cls.INNER}╝{C.RESET}")
+        progress = cls._progress_bar(s.processed, s.total, width=26)
+        lines = [
+            f"{C.BRIGHT_WHITE}SESSION COMPLETE{C.RESET}",
+            "",
+            (
+                f"{C.BRIGHT_GREEN}✓ Valid:{C.RESET} {s.success:<6}  "
+                f"{C.BRIGHT_RED}✗ Invalid:{C.RESET} {s.invalid:<6}  "
+                f"{C.BRIGHT_YELLOW}⚠ Errors:{C.RESET} {s.errors:<6}"
+            ),
+            (
+                f"{C.BRIGHT_BLUE}⏱ Time:{C.RESET} {m:02d}:{sec:02d}   "
+                f"{C.BRIGHT_MAGENTA}⚡ Rate:{C.RESET} {s.rate:.1f}/min   "
+                f"{C.BRIGHT_WHITE}# Checked:{C.RESET} {s.processed}/{s.total}"
+            ),
+            f"{progress} {C.DIM}{s.progress_percent:5.1f}%{C.RESET}",
+        ]
+        cls._print("")
+        for line in cls._boxed_lines(lines, square=True):
+            cls._print(line)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
